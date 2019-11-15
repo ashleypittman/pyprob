@@ -5,6 +5,7 @@ import math
 import os
 import sys
 import shelve
+import pickle
 from glob import glob
 import numpy as np
 import uuid
@@ -16,6 +17,7 @@ from .. import util
 from ..util import TraceMode, PriorInflation
 from ..concurrency import ConcurrentShelf
 
+import daosdbm
 
 class Batch():
     def __init__(self, traces):
@@ -131,6 +133,18 @@ class OnlineDataset(Dataset):
             util.progress_bar_update(i)
         util.progress_bar_end()
 
+class OfflineDatasetDaosKV(Dataset):
+    def __init__(self, daos, kv_name):
+
+        self._kv = daos.get_kv_by_name(kv_name)
+        self._length = pickle.loads(self._kv['__length'])
+
+    def __len__(self):
+        return self._length
+
+    def __getitem__(self, idx):
+        # Do the unpickle here that shelve would have done internally
+        return pickle.loads(self._kv[idx])
 
 class OfflineDatasetFile(Dataset):
     cache = OrderedDict()
@@ -170,23 +184,38 @@ class OfflineDatasetFile(Dataset):
 class OfflineDataset(ConcatDataset):
     def __init__(self, dataset_dir):
         self._dataset_dir = dataset_dir
+
+        transport = 'psm2'
+        interface = 'eth0'
+
+        # FIXME: Add these values
+        puid = ''
+        cuid = ''
+
+        daos_root = daosdbm.daos_named_kv(transport, interface, puid, cuid)
+
+        files = sorted(daos_root.get_kv_list())
+
         # files = [name for name in os.listdir(self._dataset_dir)]
-        files = sorted(glob(os.path.join(self._dataset_dir, 'pyprob_traces_sorted_*')))
-        if len(files) > 0:
-            self._sorted_on_disk = True
-        else:
-            self._sorted_on_disk = False
-            files = sorted(glob(os.path.join(self._dataset_dir, 'pyprob_traces_*')))
-        if len(files) == 0:
-            raise RuntimeError('Cannot find any data set files at {}'.format(dataset_dir))
+        #files = sorted(glob(os.path.join(self._dataset_dir, 'pyprob_traces_sorted_*')))
+        #if len(files) > 0:
+        #    self._sorted_on_disk = True
+        #else:
+        #    self._sorted_on_disk = False
+        #    files = sorted(glob(os.path.join(self._dataset_dir, 'pyprob_traces_*')))
+        #if len(files) == 0:
+        #    raise RuntimeError('Cannot find any data set files at {}'.format(dataset_dir))
+        #datasets = []
+        #for file in files:
+        #    try:
+        #        dataset = OfflineDatasetFile(file)
+        #        datasets.append(dataset)
+        #    except Exception as e:
+        #        print(e)
+        #        print(colored('Warning: dataset file potentially corrupt, omitting: {}'.format(file), 'red', attrs=['bold']))
         datasets = []
         for file in files:
-            try:
-                dataset = OfflineDatasetFile(file)
-                datasets.append(dataset)
-            except Exception as e:
-                print(e)
-                print(colored('Warning: dataset file potentially corrupt, omitting: {}'.format(file), 'red', attrs=['bold']))
+            datasets.append(OfflineDatasetDaosKV(daos_root, file))
         super().__init__(datasets)
         print('OfflineDataset at: {}'.format(self._dataset_dir))
         print('Num. traces      : {:,}'.format(len(self)))
